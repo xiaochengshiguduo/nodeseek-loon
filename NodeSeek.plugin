@@ -1,0 +1,17 @@
+#!name = NodeSeek
+#!desc = NodeSeek 每日自动签到（由 Egern 模块移植）。配置项可开启固定 5 鸡腿、修改签到时间；安装后请先登录 nodeseek 并打开个人中心页捕获 Cookie
+#!author = Nullwhy (Loon port by Minis)
+#!homepage = https://github.com/Nullwhy/Egern
+#!icon = https://raw.githubusercontent.com/Nullwhy/Egern/main/Icon/Nullwhy.png
+#!loon_version = 3.2.1(733)
+
+[Argument]
+fixedLegs = switch,false,tag=固定 5 鸡腿,desc=关闭=随机鸡腿（默认），开启=固定 5 鸡腿
+checkinTime = input,"0 10 * * *",tag=每日签到时间,desc=5 段 cron 表达式：分 时 日 月 周
+
+[Script]
+http-response ^https://www\.nodeseek\.com/api/account/getInfo/ script-path=https://raw.githubusercontent.com/xiaochengshiguduo/nodeseek-loon/main/NodeSeek.loon.js, tag=NodeSeek Cookie
+cron {checkinTime} script-path=https://raw.githubusercontent.com/xiaochengshiguduo/nodeseek-loon/main/NodeSeek.loon.js, tag=NodeSeek 签到, enable=true
+
+[MITM]
+hostname = www.nodeseek.com
