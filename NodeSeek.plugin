@@ -10,7 +10,7 @@ fixedLegs = switch,false,tag=固定 5 鸡腿,desc=关闭=随机鸡腿（默认�
 checkinTime = input,"0 10 * * *",tag=每日签到时间,desc=5 段 cron 表达式：分 时 日 月 周
 
 [Script]
-http-response ^https://www\.nodeseek\.com/api/account/getInfo/ script-path=https://raw.githubusercontent.com/xiaochengshiguduo/nodeseek-loon/main/NodeSeek.loon.js, tag=NodeSeek Cookie
+http-response ^https://www\.nodeseek\.com/api/account/getInfo/ requires-body=1,script-path=https://raw.githubusercontent.com/xiaochengshiguduo/nodeseek-loon/main/NodeSeek.loon.js, tag=NodeSeek Cookie
 cron {checkinTime} script-path=https://raw.githubusercontent.com/xiaochengshiguduo/nodeseek-loon/main/NodeSeek.loon.js, tag=NodeSeek 签到, enable=true
 
 [MITM]

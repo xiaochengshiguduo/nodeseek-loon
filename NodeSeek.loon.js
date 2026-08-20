@@ -25,6 +25,18 @@ function argFixedLegs() {
   }
 }
 
+// 捕获状态记录：STORE_KEY 存请求头，STATE_KEY 存 "ok|<cookie指纹>" 或 "fail|"（用于去重通知）
+const STATE_KEY = "nodeseek_capture_state";
+
+// djb2 指纹，用于判断 Cookie 是否变化（变化才保存/提示，避免每次打开页面都通知）
+function fp(str) {
+  let h = 5381;
+  for (let i = 0; i < str.length; i++) {
+    h = ((h << 5) + h + str.charCodeAt(i)) >>> 0;
+  }
+  return String(h);
+}
+
 // 捕获时按此列表挑字段；签到时用同表默认值补全
 const DEFAULT_HEADERS = {
   Connection: "keep-alive",
@@ -132,19 +144,76 @@ function doCheckIn() {
 }
 
 // ---------- Cookie 捕获（http-response 触发） ----------
-function captureHeaders() {
-  const saved = pickHeaders(($request && $request.headers) || {});
 
-  // 未捕获到 Cookie 视为未登录，不覆盖已有数据
-  if (!saved["Cookie"]) {
-    notify("Cookie 失败", "未捕获到 Cookie，请确认已登录并访问个人中心页");
+// 解析 getInfo 响应体判断登录状态："in" / "out" / "unknown"
+function judgeLogin(body) {
+  let b = null;
+  try { b = body ? JSON.parse(body) : null; } catch (e) {}
+  if (!b || typeof b !== "object") return "unknown";
+  const uid = b.uid != null ? b.uid : (b._uid != null ? b._uid : (b.user ? b.user.uid : undefined));
+  const uname = b.username || (b.user && b.user.username) || b.name || b.nickname;
+  if (b.isLoggedIn === true || (typeof uid === "number" && uid > 0) ||
+      (typeof uid === "string" && uid !== "0" && /^\d+$/.test(uid) && parseInt(uid, 10) > 0) ||
+      (uname && String(uname).trim() && !/^(guest|游客|访客)$/i.test(String(uname).trim()))) {
+    return "in";
+  }
+  if (b.isLoggedIn === false || uid === 0 || uid === "0" || b.status === 401 || b.status === 403 ||
+      /not[- ]?logged|未登录|please log|login required|sign in/i.test(JSON.stringify(b).slice(0, 300))) {
+    return "out";
+  }
+  return "unknown";
+}
+
+function captureHeaders() {
+  const reqHeaders = ($request && $request.headers) || {};
+  const saved = pickHeaders(reqHeaders);
+  const cookieVal = saved["Cookie"] || "";
+  let state = "";
+  try { state = $persistentStore.read(STATE_KEY) || ""; } catch (e) {}
+
+  // 1. 登录状态：优先看响应体，解析失败再退回 Cookie 启发式
+  let verdict = "unknown";
+  try {
+    verdict = judgeLogin($response && $response.body);
+  } catch (e) {}
+  if (verdict === "unknown" && /_uid=(0|%3A0)(;|$)/i.test(cookieVal)) verdict = "out";
+
+  // 2. 未登录：不覆盖已有请求头；状态从 ok→fail 转换时提示一次，之后静默
+  if (verdict === "out") {
+    if (state.indexOf("fail") !== 0) {
+      notify("Cookie 失败", "未检测到登录状态，未覆盖已有请求头");
+    }
+    $persistentStore.write("fail|", STATE_KEY);
+    log("未登录，跳过保存");
     $done({ response: $response });
     return;
   }
 
-  $persistentStore.write(JSON.stringify(saved), STORE_KEY);
-  log("请求头已保存，共 " + Object.keys(saved).length + " 个字段");
-  notify("Cookie 成功", "请求头已保存，可以正常签到了");
+  // 3. 判定为已登录但没有 Cookie（异常情况）：跳过，不打扰
+  if (verdict === "in" && !cookieVal) {
+    log("判定已登录但未捕获到 Cookie，跳过保存");
+    $done({ response: $response });
+    return;
+  }
+
+  // 4. 有 Cookie（已登录或无法判定）→ 去重：指纹没变就不保存不通知
+  if (cookieVal) {
+    const fpNow = fp(cookieVal);
+    if (state === "ok|" + fpNow) {
+      log("请求头未变化，跳过保存");
+      $done({ response: $response });
+      return;
+    }
+    $persistentStore.write(JSON.stringify(saved), STORE_KEY);
+    $persistentStore.write("ok|" + fpNow, STATE_KEY);
+    log("请求头已保存，共 " + Object.keys(saved).length + " 个字段");
+    notify("Cookie 成功", "请求头已保存，可以正常签到了");
+    $done({ response: $response });
+    return;
+  }
+
+  // 5. 无法判定且没有任何 Cookie：静默跳过（可能是首次访问或纯匿名流量）
+  log("未捕获到 Cookie（无法判定登录态），跳过保存");
   $done({ response: $response });
 }
 
