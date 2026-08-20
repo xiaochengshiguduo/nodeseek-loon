@@ -31,7 +31,8 @@ function argFixedLegs() { return argSwitch("fixedLegs"); }
 function argLogEnabled() { return argSwitch("enableLog"); }
 
 // 捕获状态记录：STORE_KEY 存请求头，STATE_KEY 存 "ok|<cookie指纹>" 或 "fail|"（用于去重通知）
-const STATE_KEY = "nodeseek_capture_state";
+// 状态键升级：完整请求头版本首次运行时强制重新捕获一次
+const STATE_KEY = "nodeseek_capture_state_v2";
 
 // djb2 指纹，用于判断 Cookie 是否变化（变化才保存/提示，避免每次打开页面都通知）
 function fp(str) {
