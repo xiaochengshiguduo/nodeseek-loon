@@ -81,19 +81,40 @@ function headerValue(src, key) {
 
 function pickHeaders(src) {
   const saved = {};
-  for (let i = 0; i < HEADER_KEYS.length; i++) {
-    const key = HEADER_KEYS[i];
-    const value = headerValue(src || {}, key);
-    if (value) saved[key] = value;
+  const input = src || {};
+  const keys = Object.keys(input);
+  // Loon 3.5/Cloudflare 可能新增 sec-*、sec-ch-* 等头，不能只保存固定白名单。
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i];
+    const value = input[key];
+    if (value != null && String(value) !== "" &&
+        !/^(content-length|proxy-|upgrade|te|trailer)$/i.test(key)) {
+      saved[key] = value;
+    }
+  }
+  // 兼容某些运行环境大小写异常：补齐签到所需的标准字段。
+  for (let j = 0; j < HEADER_KEYS.length; j++) {
+    const key = HEADER_KEYS[j];
+    const value = headerValue(input, key);
+    if (value && !saved[key]) saved[key] = value;
   }
   return saved;
 }
 
 function buildAttendHeaders(saved) {
   const headers = {};
-  for (let i = 0; i < HEADER_KEYS.length; i++) {
-    const key = HEADER_KEYS[i];
-    headers[key] = (saved && saved[key]) || DEFAULT_HEADERS[key];
+  const source = saved || {};
+  const keys = Object.keys(source);
+  // 原样复用捕获到的全部业务请求头，避免丢失 Cloudflare/浏览器特征。
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i];
+    if (/^(content-length|proxy-|upgrade|te|trailer)$/i.test(key)) continue;
+    headers[key] = source[key];
+  }
+  // 仅对捕获请求中不存在的核心字段使用默认值。
+  for (let j = 0; j < HEADER_KEYS.length; j++) {
+    const key = HEADER_KEYS[j];
+    if (!headerValue(headers, key) && DEFAULT_HEADERS[key]) headers[key] = DEFAULT_HEADERS[key];
   }
   return headers;
 }
