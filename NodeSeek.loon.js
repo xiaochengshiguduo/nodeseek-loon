@@ -91,11 +91,82 @@ function pickHeaders(src) {
 
 function buildAttendHeaders(saved) {
   const headers = {};
+  // 这些是连接层/传输层头，交给 Loon 网络库自动生成，避免与请求实际连接不一致而触发风控。
+  const skip = { Host: true, Connection: true, "Accept-Encoding": true, Priority: true };
   for (let i = 0; i < HEADER_KEYS.length; i++) {
     const key = HEADER_KEYS[i];
-    headers[key] = (saved && saved[key]) || DEFAULT_HEADERS[key];
+    if (skip[key]) continue;
+    const value = (saved && saved[key]) || DEFAULT_HEADERS[key];
+    if (value) headers[key] = value;
   }
   return headers;
+}
+
+function responseSnippet(data) {
+  if (data == null) return "";
+  return String(data).replace(/\s+/g, " ").slice(0, 180);
+}
+
+function postAttendance(url, headers, callback) {
+  $httpClient.post({ url: url, headers: headers, body: "", timeout: 10000 }, callback);
+}
+
+// NodeSeek refract 签名：SHA-1(METHOD + "\\n\\n" + URL + "\\n\\n" + UA + "\\n\\n" + body + "\\n\\n" + key)
+function sha1Hex(msg) {
+  const utf8 = unescape(encodeURIComponent(String(msg)));
+  const words = [];
+  for (let i = 0; i < utf8.length; i++) words[i >> 2] |= utf8.charCodeAt(i) << (24 - (i % 4) * 8);
+  const bitLen = utf8.length * 8;
+  words[bitLen >> 5] |= 0x80 << (24 - (bitLen % 32));
+  words[((bitLen + 64 >> 9) << 4) + 15] = bitLen;
+  function rol(n, c) { return (n << c) | (n >>> (32 - c)); }
+  function hex(n) { let s = ""; for (let i = 7; i >= 0; i--) s += ((n >>> (i * 4)) & 15).toString(16); return s; }
+  let h0 = 0x67452301, h1 = 0xefcdab89, h2 = 0x98badcfe, h3 = 0x10325476, h4 = 0xc3d2e1f0;
+  for (let i = 0; i < words.length; i += 16) {
+    const w = new Array(80);
+    for (let t = 0; t < 16; t++) w[t] = words[i + t] | 0;
+    for (let t = 16; t < 80; t++) w[t] = rol(w[t-3] ^ w[t-8] ^ w[t-14] ^ w[t-16], 1);
+    let a = h0, b = h1, c = h2, d = h3, e = h4;
+    for (let t = 0; t < 80; t++) {
+      let f, k;
+      if (t < 20) { f = (b & c) | (~b & d); k = 0x5a827999; }
+      else if (t < 40) { f = b ^ c ^ d; k = 0x6ed9eba1; }
+      else if (t < 60) { f = (b & c) | (b & d) | (c & d); k = 0x8f1bbcdc; }
+      else { f = b ^ c ^ d; k = 0xca62c1d6; }
+      const temp = (rol(a, 5) + f + e + k + w[t]) | 0;
+      e = d; d = c; c = rol(b, 30) | 0; b = a; a = temp;
+    }
+    h0 = (h0 + a) | 0; h1 = (h1 + b) | 0; h2 = (h2 + c) | 0; h3 = (h3 + d) | 0; h4 = (h4 + e) | 0;
+  }
+  return hex(h0) + hex(h1) + hex(h2) + hex(h3) + hex(h4);
+}
+
+function getHeader(headers, name) {
+  if (!headers) return "";
+  const keys = Object.keys(headers);
+  for (let i = 0; i < keys.length; i++) if (keys[i].toLowerCase() === name.toLowerCase()) return headers[keys[i]] || "";
+  return "";
+}
+
+// 先刷新 refract-key，再为 attendance URL 生成专属签名
+function prepareAttendance(url, headers, callback) {
+  const ua = headers["User-Agent"] || "Mozilla/5.0";
+  const pingHeaders = {
+    Accept: "*/*",
+    "Accept-Language": headers["Accept-Language"] || "zh-CN,zh-Hans;q=0.9",
+    "User-Agent": ua,
+    Referer: "https://www.nodeseek.com/sw.js?v=0.3.33",
+    Cookie: headers.Cookie || "",
+    "Sec-Fetch-Mode": "cors"
+  };
+  $httpClient.get({ url: "https://www.nodeseek.com/edge-cgi/ping", headers: pingHeaders, timeout: 10000 }, function (err, resp) {
+    let key = getHeader(resp && resp.headers, "refract-key-update") || headers["refract-key"] || "";
+    if (err) log("刷新 refract-key 失败，沿用已保存 key");
+    headers["refract-version"] = headers["refract-version"] || "0.3.33";
+    headers["refract-key"] = key;
+    headers["refract-sign"] = sha1Hex(["POST", url, ua, "", key].join("\n\n"));
+    callback(headers);
+  });
 }
 
 // ---------- 定时签到（cron 触发，无 $response） ----------
@@ -119,37 +190,36 @@ function doCheckIn() {
     return;
   }
 
-  $httpClient.post({
-    url: ATTEND_BASE + "?random=" + (fixed ? "false" : "true"),
-    headers: buildAttendHeaders(saved),
-    body: "",
-    timeout: 10000
-  }, function (error, response, data) {
+  const url = ATTEND_BASE + "?random=" + (fixed ? "false" : "true");
+  const headers = buildAttendHeaders(saved);
+  prepareAttendance(url, headers, function (preparedHeaders) {
+  postAttendance(url, preparedHeaders, function (error, response, data) {
     if (error || !response) {
       notify("网络错误", "请检查网络连接");
       log(error && error.message ? error.message : String(error));
       $done();
       return;
     }
-    const status = response.status;
+    const status = response.status || response.statusCode;
     let message = "";
     try { message = (JSON.parse(data) || {}).message || ""; } catch (e) {}
 
     const modeTag = fixed ? "固定" : "随机";
     if (status === 403) {
-      notify("被风控", "403，稍后重试");
+      log("403 响应：" + responseSnippet(data));
+      notify("被风控", "403，Cookie/UA/IP 可能不匹配；请重新捕获后重试");
     } else if (status === 500) {
       notify("服务器错误", "500");
     } else if (status >= 200 && status < 300) {
       notify("签到成功（" + modeTag + "）", message || "签到完成");
     } else {
+      log("HTTP " + status + " 响应：" + responseSnippet(data));
       notify("请求异常", "HTTP " + status);
     }
     $done();
   });
+  });
 }
-
-// ---------- Cookie 捕获（http-response 触发） ----------
 
 // 解析 getInfo 响应体判断登录状态："in" / "out" / "unknown"
 function judgeLogin(body) {
