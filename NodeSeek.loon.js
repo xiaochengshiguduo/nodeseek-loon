@@ -5,25 +5,30 @@
 功能    : Cookie 捕获 + 每日自动签到
 使用说明:
 1. Loon 添加插件后，安装根证书并开启 MITM
-2. 保持已登录 nodeseek.com，打开个人中心页面触发一次 Cookie 捕获
-3. 之后每天按插件「签到时间」配置项自动签到
-4. 固定 5 鸡腿：插件「固定 5 鸡腿」开关打开（不依赖脚本修改）
+2. 打开配置项「启用 Cookie 捕获」，访问 nodeseek 个人中心页捕获请求头，成功后关闭开关
+3. 之后每天按「每日签到时间」自动签到（签到无需捕获开关保持开启）
+4. 固定 5 鸡腿：打开配置项「固定 5 鸡腿」开关
+5. 排障：打开「开启日志」开关，在 Loon 脚本控制台查看详细输出
 *******************************/
 
 const SCRIPT_NAME = "NodeSeek🎉";
 const STORE_KEY = "nodeseek_headers";
 const ATTEND_BASE = "https://www.nodeseek.com/api/attendance";
 
-// 读取插件配置项：固定鸡腿开关（Loon [Argument] 传入，兼容无参数环境，默认随机）
-function argFixedLegs() {
+// 读取插件配置开关（Loon [Argument] 传入，兼容无参数环境，默认 false）
+function argSwitch(key) {
   try {
-    const v = (typeof $argument !== "undefined" && $argument) ? $argument.fixedLegs : undefined;
+    const v = (typeof $argument !== "undefined" && $argument) ? $argument[key] : undefined;
     if (v == null || String(v).trim() === "") return false;
     return ["1", "true", "yes", "on"].indexOf(String(v).trim().toLowerCase()) !== -1;
   } catch (e) {
     return false;
   }
 }
+// 固定鸡腿开关（默认随机）
+function argFixedLegs() { return argSwitch("fixedLegs"); }
+// 日志开关（默认关闭，开启后输出详细日志到 Loon 控制台）
+function argLogEnabled() { return argSwitch("enableLog"); }
 
 // 捕获状态记录：STORE_KEY 存请求头，STATE_KEY 存 "ok|<cookie指纹>" 或 "fail|"（用于去重通知）
 const STATE_KEY = "nodeseek_capture_state";
@@ -57,6 +62,7 @@ const DEFAULT_HEADERS = {
 const HEADER_KEYS = Object.keys(DEFAULT_HEADERS);
 
 function log(msg) {
+  if (!argLogEnabled()) return;
   const line = "[" + SCRIPT_NAME + "] " + msg;
   try { console.log(line); } catch (e) {}
   if (typeof $log !== "undefined") { try { $log(line); } catch (e) {} }
